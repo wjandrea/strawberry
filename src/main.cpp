@@ -44,6 +44,10 @@
 
 #include <glib.h>
 
+#ifdef HAVE_MIMALLOC
+#  include <mimalloc.h>
+#endif
+
 #include <QObject>
 #include <QApplication>
 #include <QCoreApplication>
@@ -118,6 +122,10 @@
 using std::make_shared;
 
 int main(int argc, char *argv[]) {
+
+#ifdef HAVE_MIMALLOC
+  mi_version();
+#endif
 
 #ifdef Q_OS_MACOS
   // Do Mac specific startup to get media keys working.
