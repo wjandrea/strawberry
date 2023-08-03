@@ -108,7 +108,8 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       pipeline_(nullptr),
       audiobin_(nullptr),
       audiosink_(nullptr),
-      audioqueue_(nullptr),
+      inputaudioqueue_(nullptr),
+      outputaudioqueue_(nullptr),
       audioqueueconverter_(nullptr),
       volume_(nullptr),
       volume_sw_(nullptr),
@@ -118,6 +119,7 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       equalizer_(nullptr),
       equalizer_preamp_(nullptr),
       eventprobe_(nullptr),
+      bufferprobe_(nullptr),
       upstream_events_probe_cb_id_(0),
       buffer_probe_cb_id_(0),
       playbin_probe_cb_id_(0),
@@ -174,7 +176,7 @@ GstEnginePipeline::~GstEnginePipeline() {
     }
 
     if (buffer_probe_cb_id_ != 0) {
-      GstPad *pad = gst_element_get_static_pad(audioqueueconverter_, "src");
+      GstPad *pad = gst_element_get_static_pad(bufferprobe_, "src");
       if (pad) {
         gst_pad_remove_probe(pad, buffer_probe_cb_id_);
         gst_object_unref(pad);
@@ -490,9 +492,16 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
 
   // Create all the other elements
 
-  audioqueue_ = CreateElement("queue2", "audioqueue", audiobin_, error);
-  if (!audioqueue_) {
+  inputaudioqueue_ = CreateElement("queue2", "inputaudioqueue", audiobin_, error);
+  if (!inputaudioqueue_) {
     return false;
+  }
+
+  if (!fading_enabled_) {
+    outputaudioqueue_ = CreateElement("queue2", "outputaudioqueue", audiobin_, error);
+    if (!outputaudioqueue_) {
+      return false;
+    }
   }
 
   audioqueueconverter_ = CreateElement("audioconvert", "audioqueueconverter", audiobin_, error);
@@ -629,19 +638,9 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
   }
 
   {  // Create a pad on the outside of the audiobin and connect it to the pad of the first element.
-    GstPad *pad = gst_element_get_static_pad(audioqueue_, "sink");
+    GstPad *pad = gst_element_get_static_pad(inputaudioqueue_, "sink");
     if (pad) {
       gst_element_add_pad(audiobin_, gst_ghost_pad_new("sink", pad));
-      gst_object_unref(pad);
-    }
-  }
-
-  // Add a data probe on the src pad of the audioconvert element for our scope.
-  // We do it here because we want pre-equalized and pre-volume samples so that our visualization are not be affected by them.
-  {
-    GstPad *pad = gst_element_get_static_pad(eventprobe_, "src");
-    if (pad) {
-      upstream_events_probe_cb_id_ = gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM, &UpstreamEventsProbeCallback, this, nullptr);
       gst_object_unref(pad);
     }
   }
@@ -651,17 +650,27 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
   // Disable the default buffer and byte limits, so we only buffer based on time.
 
   qLog(Debug) << "Setting buffer duration:" << buffer_duration_nanosec_ << "low watermark:" << buffer_low_watermark_ << "high watermark:" << buffer_high_watermark_;
-  g_object_set(G_OBJECT(audioqueue_), "use-buffering", true, nullptr);
-  g_object_set(G_OBJECT(audioqueue_), "max-size-buffers", 0, nullptr);
-  g_object_set(G_OBJECT(audioqueue_), "max-size-bytes", 0, nullptr);
-  g_object_set(G_OBJECT(audioqueue_), "max-size-time", buffer_duration_nanosec_, nullptr);
-  g_object_set(G_OBJECT(audioqueue_), "low-watermark", buffer_low_watermark_, nullptr);
-  g_object_set(G_OBJECT(audioqueue_), "high-watermark", buffer_high_watermark_, nullptr);
+
+  g_object_set(G_OBJECT(inputaudioqueue_), "use-buffering", true, nullptr);
+  g_object_set(G_OBJECT(inputaudioqueue_), "max-size-buffers", 0, nullptr);
+  g_object_set(G_OBJECT(inputaudioqueue_), "max-size-bytes", 0, nullptr);
+  g_object_set(G_OBJECT(inputaudioqueue_), "max-size-time", buffer_duration_nanosec_, nullptr);
+  g_object_set(G_OBJECT(inputaudioqueue_), "low-watermark", buffer_low_watermark_, nullptr);
+  g_object_set(G_OBJECT(inputaudioqueue_), "high-watermark", buffer_high_watermark_, nullptr);
+
+  if (outputaudioqueue_) {
+    g_object_set(G_OBJECT(outputaudioqueue_), "use-buffering", true, nullptr);
+    g_object_set(G_OBJECT(outputaudioqueue_), "max-size-buffers", 0, nullptr);
+    g_object_set(G_OBJECT(outputaudioqueue_), "max-size-bytes", 0, nullptr);
+    g_object_set(G_OBJECT(outputaudioqueue_), "max-size-time", buffer_duration_nanosec_, nullptr);
+    g_object_set(G_OBJECT(outputaudioqueue_), "low-watermark", buffer_low_watermark_, nullptr);
+    g_object_set(G_OBJECT(outputaudioqueue_), "high-watermark", buffer_high_watermark_, nullptr);
+  }
 
   // Link all elements
 
-  if (!gst_element_link(audioqueue_, audioqueueconverter_)) {
-    error = "Failed to link audio queue to audio queue converter.";
+  if (!gst_element_link(inputaudioqueue_, audioqueueconverter_)) {
+    error = "Failed to link input audio queue to audio queue converter.";
     return false;
   }
 
@@ -741,6 +750,9 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
     return false;
   }
 
+  element_link = audiosinkconverter;
+  GstElement *element_link_filtered = outputaudioqueue_ ? outputaudioqueue_ : audiosink_;
+
   {
     GstCaps *caps = gst_caps_new_empty_simple("audio/x-raw");
     if (!caps) {
@@ -751,16 +763,37 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
       qLog(Debug) << "Setting channels to" << channels_;
       gst_caps_set_simple(caps, "channels", G_TYPE_INT, channels_, nullptr);
     }
-    const bool link_filtered_result = gst_element_link_filtered(audiosinkconverter, audiosink_, caps);
+    const bool link_filtered_result = gst_element_link_filtered(element_link, element_link_filtered, caps);
     gst_caps_unref(caps);
     if (!link_filtered_result) {
-      error = "Failed to link audio sink converter to audio sink with filter for " + output_;
+      error = "Failed to link audio sink converter with filter";
+      return false;
+    }
+    element_link = element_link_filtered;
+  }
+
+  if (element_link != audiosink_) {
+    if (!gst_element_link(element_link, audiosink_)) {
+      error = "Failed to link output audio queue to audio sink for " + output_;
       return false;
     }
   }
 
-  {  // Add probes and handlers.
-    GstPad *pad = gst_element_get_static_pad(audioqueueconverter_, "src");
+  if (outputaudioqueue_) {
+    eventprobe_ = outputaudioqueue_;
+  }
+
+  {
+    GstPad *pad = gst_element_get_static_pad(eventprobe_, "src");
+    if (pad) {
+      upstream_events_probe_cb_id_ = gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM, &UpstreamEventsProbeCallback, this, nullptr);
+      gst_object_unref(pad);
+    }
+  }
+
+  {
+    bufferprobe_ = outputaudioqueue_ ? outputaudioqueue_ : audiosinkconverter;
+    GstPad *pad = gst_element_get_static_pad(bufferprobe_, "src");
     if (pad) {
       buffer_probe_cb_id_ = gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, BufferProbeCallback, this, nullptr);
       gst_object_unref(pad);
@@ -1483,7 +1516,7 @@ void GstEnginePipeline::StateChangedMessageReceived(GstMessage *msg) {
 void GstEnginePipeline::BufferingMessageReceived(GstMessage *msg) {
 
   // Only handle buffering messages from the queue2 element in audiobin - not the one that's created automatically by playbin.
-  if (GST_ELEMENT(GST_MESSAGE_SRC(msg)) != audioqueue_) {
+  if (GST_ELEMENT(GST_MESSAGE_SRC(msg)) != outputaudioqueue_) {
     return;
   }
 
