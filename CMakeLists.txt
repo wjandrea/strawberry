@@ -307,7 +307,7 @@ endif()
 
 # TAGLIB
 if(USE_TAGLIB)
-  pkg_check_modules(TAGLIB REQUIRED taglib>=1.11.1)
+  pkg_check_modules(TAGLIB REQUIRED taglib>=1.12)
   if(TAGLIB_FOUND)
     find_path(HAVE_TAGLIB_DSFFILE_H taglib/dsffile.h)
     find_path(HAVE_TAGLIB_DSDIFFFILE_H taglib/dsdifffile.h)
@@ -600,6 +600,3 @@ if(NOT CMAKE_CROSSCOMPILING)
   endif()
 endif()
 
-if(USE_TAGLIB AND TAGLIB_FOUND AND NOT TAGLIB_VERSION VERSION_GREATER_EQUAL 1.12)
-  message(WARNING "There is a critical bug in TagLib (1.11.1) that can result in corrupt Ogg files, see: https://github.com/taglib/taglib/issues/864, please consider updating TagLib to the newest version.")
-endif()
