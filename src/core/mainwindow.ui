@@ -463,6 +463,9 @@
     <addaction name="action_stop"/>
     <addaction name="action_next_track"/>
     <addaction name="separator"/>
+    <addaction name="action_seek_backward"/>
+    <addaction name="action_seek_forward"/>
+    <addaction name="separator"/>
     <addaction name="action_mute"/>
     <addaction name="separator"/>
     <addaction name="action_love"/>
@@ -555,6 +558,28 @@
    </property>
    <property name="shortcut">
     <string>F8</string>
+   </property>
+  </action>
+  <action name="action_seek_backward">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Seek backward</string>
+   </property>
+   <property name="shortcut">
+    <string>F9</string>
+   </property>
+  </action>
+  <action name="action_seek_forward">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Seek forward</string>
+   </property>
+   <property name="shortcut">
+    <string>F10</string>
    </property>
   </action>
   <action name="action_quit">
